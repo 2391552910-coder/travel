@@ -7,6 +7,13 @@ from datetime import date
 
 st.set_page_config(page_title="智能旅游行程规划助手", page_icon="✈️", layout="wide")
 
+MAX_HISTORY = 20
+
+def trim_history(messages, max_len=MAX_HISTORY):
+    if len(messages) > max_len:
+        return messages[:1] + messages[-(max_len-1):]
+    return messages
+
 def process_agent_response(user_input, history):
     """处理 Agent 响应并实时展示中间过程"""
     agent = get_travel_agent()
@@ -87,6 +94,7 @@ if submit_button and destination:
     """
     
     st.session_state.messages.append(HumanMessage(content=initial_input))
+    st.session_state.messages = trim_history(st.session_state.messages)
     
     # 使用新定义的流式展示函数
     try:
@@ -99,7 +107,7 @@ if submit_button and destination:
         st.error(f"生成行程时出错: {e}")
 
 st.title("✨ 您的个性化旅游行程")
-st.caption("💡 提示：🗺️ 景点地点链接指向高德地图 | 🍜 餐厅链接指向美团美食 | 🏨 酒店链接指向美团酒店")
+st.caption("💡 提示：🗺️景点 ｜ 🍜餐厅 ｜ 🏨酒店 链接指向高德地图")
 
 for msg in st.session_state.messages:
     if isinstance(msg, HumanMessage):
@@ -109,11 +117,39 @@ for msg in st.session_state.messages:
             st.markdown(msg.content)
     elif isinstance(msg, AIMessage):
         with st.chat_message("assistant"):
-            # 使用 unsafe_allow_html 允许链接在新标签页打开
             st.markdown(msg.content, unsafe_allow_html=True)
+
+def extract_itinerary_text(messages):
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and msg.content:
+            if "Day" in msg.content or "行程" in msg.content:
+                return msg.content
+    return ""
+
+if st.session_state.messages:
+    itinerary_text = extract_itinerary_text(st.session_state.messages)
+    if itinerary_text:
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.download_button(
+                label="📥 导出行程 (Markdown)",
+                data=itinerary_text,
+                file_name="行程规划.md",
+                mime="text/markdown",
+                use_container_width=True
+            )
+        with col2:
+            st.download_button(
+                label="📋 复制行程",
+                data=itinerary_text,
+                file_name="行程规划.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
 
 if user_feedback := st.chat_input("对行程不满意？告诉我想怎么修改"):
     st.session_state.messages.append(HumanMessage(content=user_feedback))
+    st.session_state.messages = trim_history(st.session_state.messages)
     with st.chat_message("user"):
         st.markdown(user_feedback)
         

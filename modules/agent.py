@@ -160,8 +160,115 @@ def calculate_trip_budget(budget_items: str) -> str:
     total = sum(float(p) for p in prices)
     return f"计算出的总预算为: {total:.2f} 元。\n费用明细: {budget_items}"
 
+@tool
+def batch_search(query: str, city: str, types: List[str]) -> str:
+    """批量搜索景点、餐厅、酒店等多个类型，一次性返回结果。适用于需要同时获取多种类型地点的场景。"""
+    import json
+    from modules.amap_mcp import get_amap_service
+
+    amap = get_amap_service()
+    if not amap.api_key:
+        return "高德地图 API Key 未配置。"
+
+    try:
+        results = {}
+        for search_type in types:
+            result = amap.search_place(f"{query} {search_type}", city=city)
+            pois = result.get("pois", [])
+            results[search_type] = {
+                "count": len(pois),
+                "places": [amap.format_place_info(poi) for poi in pois[:5]]
+            }
+
+        output = [f"批量搜索 '{query}' 的结果:\n"]
+        for stype, data in results.items():
+            output.append(f"\n【{stype}】共找到 {data['count']} 个:")
+            output.extend(data["places"][:3])
+
+        return "\n".join(output)
+    except Exception as e:
+        return f"批量搜索时出错: {str(e)}"
+
+@tool
+def retrieve_attractions_knowledge(query: str, city: Optional[str] = None) -> str:
+    """从本地知识库检索相关景点信息，包括景点介绍、评分、开放时间等。用于增强景点推荐的准确性。"""
+    from modules.vector_store import get_vector_store
+
+    try:
+        vector_store = get_vector_store()
+        results = vector_store.search_attractions(query=query, city=city, limit=5)
+
+        if not results:
+            return f"知识库中未找到与 '{query}' 相关的景点信息。"
+
+        output = [f"【知识库检索结果】找到 {len(results)} 条相关信息:\n"]
+        for i, r in enumerate(results, 1):
+            output.append(f"\n{i}. {r['content']}")
+
+        return "\n".join(output)
+    except Exception as e:
+        return f"知识库检索时出错: {str(e)}"
+
+@tool
+def save_trip_preference(
+    destination: str,
+    days: int,
+    budget: int,
+    preferences: str,
+    selected_places: str
+) -> str:
+    """保存用户的行程偏好到本地知识库，包括目的地、天数、预算、偏好类型和用户选择的景点。用于下次规划时参考。"""
+    from modules.vector_store import get_vector_store
+    import json
+
+    try:
+        vector_store = get_vector_store()
+
+        prefs_list = [p.strip() for p in preferences.split(",") if p.strip()]
+
+        places_data = json.loads(selected_places) if selected_places else []
+
+        doc_id = vector_store.add_user_preference(
+            user_id="default_user",
+            destination=destination,
+            days=days,
+            budget=budget,
+            preferences=prefs_list,
+            selected_places=places_data
+        )
+
+        return f"行程偏好已保存到知识库 (ID: {doc_id})。"
+    except json.JSONDecodeError:
+        return "景点数据格式错误，未能保存偏好。"
+    except Exception as e:
+        return f"保存偏好时出错: {str(e)}"
+
+@tool
+def get_user_history_preferences(destination: str) -> str:
+    """检索用户的历史行程偏好，用于个性化推荐。返回用户之前选择过的景点和偏好设置。"""
+    from modules.vector_store import get_vector_store
+
+    try:
+        vector_store = get_vector_store()
+        results = vector_store.get_user_preferences(user_id="default_user", limit=5)
+
+        filtered = [r for r in results if destination in r.get("destination", "")]
+
+        if not filtered:
+            return f"未找到用户前往 {destination} 的历史偏好。"
+
+        output = [f"【用户历史偏好】\n"]
+        for i, r in enumerate(filtered, 1):
+            output.append(f"\n{i}. 目的地: {r['destination']}")
+            output.append(f"   天数: {r['days']}天 | 预算: {r['budget']}元")
+            output.append(f"   偏好: {', '.join(r['preferences'])}")
+
+        return "\n".join(output)
+    except Exception as e:
+        return f"检索偏好时出错: {str(e)}"
+
 class TravelAgent:
-    def __init__(self, model_name: str = "qwen-plus"):
+    def __init__(self, model_name: str = "qwen3.5-plus"):
         if not _check_api_key():
             self.agent = None
             return
@@ -169,7 +276,9 @@ class TravelAgent:
         self.llm = ChatOpenAI(model=model_name, temperature=0.7)
         self.tools = [
             search_destinations, search_restaurants, search_hotels,
-            get_nearby_places, plan_route, geocode_address, calculate_trip_budget
+            get_nearby_places, plan_route, geocode_address, calculate_trip_budget,
+            batch_search, retrieve_attractions_knowledge, save_trip_preference,
+            get_user_history_preferences
         ]
 
         self.system_prompt = """你是一个专业的旅游规划助手。你的任务是根据用户的需求生成详细、个性化的旅游行程方案。
@@ -182,6 +291,16 @@ class TravelAgent:
 - get_nearby_places - 查询周边地点
 - geocode_address - 获取地址经纬度
 - plan_route - 规划路线
+- batch_search - 批量搜索多个类型（景点、餐厅、酒店等）
+- retrieve_attractions_knowledge - 从知识库检索景点信息
+- save_trip_preference - 保存用户行程偏好到知识库
+- get_user_history_preferences - 获取用户历史偏好
+
+【RAG 增强规则】（重要）
+在规划行程时，应优先：
+1. 使用 retrieve_attractions_knowledge 查询知识库中的景点详情
+2. 使用 get_user_history_preferences 查询用户历史偏好
+3. 结合高德地图实时数据和知识库内容提供更精准的推荐
 
 【输出格式规范 - 必须严格遵守】
 

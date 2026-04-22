@@ -9,31 +9,50 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+CACHE_TTL_CONFIG = {
+    "place": 86400,
+    "restaurant": 3600,
+    "hotel": 3600,
+    "route": 1800,
+    "geocode": 604800,
+}
+
+def get_cache_ttl(category: str) -> int:
+    return CACHE_TTL_CONFIG.get(category, 3600)
+
 class CacheManager:
     def __init__(self, ttl: int = 3600, max_size: int = 1000):
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
-        self._ttl = ttl
+        self._default_ttl = ttl
         self._max_size = max_size
         self._access_times: Dict[str, float] = {}
+        self._category_ttls: Dict[str, int] = {}
 
     def _generate_key(self, func_name: str, **kwargs) -> str:
         key_data = f"{func_name}:{json.dumps(kwargs, sort_keys=True)}"
         return hashlib.md5(key_data.encode()).hexdigest()
 
-    def get(self, key: str) -> Optional[Any]:
+    def _get_ttl(self, category: Optional[str] = None) -> int:
+        if category and category in CACHE_TTL_CONFIG:
+            return CACHE_TTL_CONFIG[category]
+        return self._default_ttl
+
+    def get(self, key: str, category: Optional[str] = None) -> Optional[Any]:
+        ttl = self._get_ttl(category)
         with self._lock:
             if key in self._cache:
                 entry = self._cache[key]
-                if time.time() - entry["timestamp"] < self._ttl:
+                if time.time() - entry["timestamp"] < ttl:
                     self._access_times[key] = time.time()
                     return entry["data"]
                 else:
                     del self._cache[key]
-                    del self._access_times[key]
+                    if key in self._access_times:
+                        del self._access_times[key]
             return None
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, value: Any, category: Optional[str] = None) -> None:
         with self._lock:
             if len(self._cache) >= self._max_size:
                 self._evict_lru()

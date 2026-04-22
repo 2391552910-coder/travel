@@ -14,11 +14,12 @@ class AmapMCPService:
         self.cache = get_cache()
 
     @with_retry("Amap")
-    def search_place(self, keywords: str, city: Optional[str] = None, 
-                     types: Optional[str] = None, offset: int = 20, 
+    def search_place(self, keywords: str, city: Optional[str] = None,
+                     types: Optional[str] = None, offset: int = 20,
                      page: int = 1) -> Dict[str, Any]:
         cache_key = f"amap_search:{keywords}:{city}:{types}:{offset}:{page}"
-        cached = self.cache.get(cache_key)
+        category = self._detect_category(keywords)
+        cached = self.cache.get(cache_key, category=category)
         if cached:
             return cached
 
@@ -36,30 +37,42 @@ class AmapMCPService:
             params["types"] = types
 
         response = requests.get(url, params=params, timeout=10)
-        
+
         if response.status_code != 200:
             raise format_api_error("Amap", response.status_code, None)
-        
+
         data = response.json()
-        
+
         if data.get("status") != "1":
             raise APIError("Amap", data.get("info", "Search failed"), None)
-        
+
         result = {
             "pois": data.get("pois", []),
             "count": data.get("count", "0"),
             "info": data.get("info", ""),
             "suggested_keyword": data.get("suggested_keyword", "")
         }
-        
-        self.cache.set(cache_key, result)
+
+        self.cache.set(cache_key, result, category=category)
         return result
+
+    def _detect_category(self, keywords: str) -> str:
+        if "餐厅" in keywords or "美食" in keywords or "饭馆" in keywords:
+            return "restaurant"
+        elif "酒店" in keywords or "宾馆" in keywords or "住宿" in keywords:
+            return "hotel"
+        elif "路线" in keywords or "导航" in keywords:
+            return "route"
+        elif "地址" in keywords or "位置" in keywords:
+            return "geocode"
+        return "place"
 
     @with_retry("Amap")
     def get_around_places(self, location: str, keywords: Optional[str] = None,
                          types: Optional[str] = None, radius: int = 1000) -> Dict[str, Any]:
         cache_key = f"amap_around:{location}:{keywords}:{types}:{radius}"
-        cached = self.cache.get(cache_key)
+        category = self._detect_category(keywords or "")
+        cached = self.cache.get(cache_key, category=category)
         if cached:
             return cached
 
@@ -76,29 +89,29 @@ class AmapMCPService:
             params["types"] = types
 
         response = requests.get(url, params=params, timeout=10)
-        
+
         if response.status_code != 200:
             raise format_api_error("Amap", response.status_code, None)
-        
+
         data = response.json()
-        
+
         if data.get("status") != "1":
             raise APIError("Amap", data.get("info", "Search failed"), None)
-        
+
         result = {
             "pois": data.get("pois", []),
             "bounds": data.get("bounds", ""),
             "recommend": data.get("recommend", "")
         }
-        
-        self.cache.set(cache_key, result)
+
+        self.cache.set(cache_key, result, category=category)
         return result
 
     @with_retry("Amap")
     def get_route_directions(self, origin: str, destination: str,
                             strategy: str = "0", mode: str = "walking") -> Dict[str, Any]:
         cache_key = f"amap_route:{origin}:{destination}:{strategy}:{mode}"
-        cached = self.cache.get(cache_key)
+        cached = self.cache.get(cache_key, category="route")
         if cached:
             return cached
 
@@ -126,14 +139,14 @@ class AmapMCPService:
             "info": data.get("info", ""),
             "count": data.get("count", "0")
         }
-        
-        self.cache.set(cache_key, result)
+
+        self.cache.set(cache_key, result, category="route")
         return result
 
     @with_retry("Amap")
     def get_geocode(self, address: str, city: Optional[str] = None) -> Dict[str, Any]:
         cache_key = f"amap_geocode:{address}:{city}"
-        cached = self.cache.get(cache_key)
+        cached = self.cache.get(cache_key, category="geocode")
         if cached:
             return cached
 
@@ -147,22 +160,22 @@ class AmapMCPService:
             params["city"] = city
 
         response = requests.get(url, params=params, timeout=10)
-        
+
         if response.status_code != 200:
             raise format_api_error("Amap", response.status_code, None)
-        
+
         data = response.json()
-        
+
         if data.get("status") != "1":
             raise APIError("Amap", data.get("info", "Geocoding failed"), None)
-        
+
         result = {
             "geocodes": data.get("geocodes", []),
             "info": data.get("info", ""),
             "count": data.get("count", "0")
         }
-        
-        self.cache.set(cache_key, result)
+
+        self.cache.set(cache_key, result, category="geocode")
         return result
 
     def format_place_info(self, poi: Dict[str, Any]) -> str:
